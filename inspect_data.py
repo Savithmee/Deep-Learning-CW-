@@ -1,3 +1,4 @@
+# Run:  python inspect_data.py data/dev_labeled_ChatGPT.jsonl data/passages_bm25_ChatGPT_humfacts.jsonl
 # understanding overall concept of the assignment: Part 01 Word Overlap
 
 # given a statement eg: "Albert Einstein was born in Germany"
@@ -19,6 +20,7 @@
 
 import json, re, sys, unicodedata
 from collections import Counter 
+from nltk.stem import PorterStemmer
 
 LABELS = sys.argv[1] if len(sys.argv) > 1 else "data/dev_labeled_ChatGPT.jsonl"
 PASSAGES = sys.argv[2] if len(sys.argv) > 2 else "data/passages_bm25_ChatGPT_humfacts.jsonl"
@@ -197,3 +199,236 @@ print(
     f"-> reuse {slots/len(uniq):.1f}x"
 ) # printing the ratio of passage slots to unique passages
 
+# -- Step 9: Investigating markup patterns in passages
+
+uniq = sorted(uniq) # sorts the passages such that comparing results becomes easier
+no_tags = [re.sub(r"<[^>]*>", " ", t) for t in uniq] # replacing tags with spaces 
+tags = Counter(
+    t for txt in uniq 
+    for t in set(re.findall(r"<[^>]*>", txt))
+) # counts number of passages containing any type of tag (for example: <s> 2 passages, <p> 2 passages exct)
+# helps determine whether the dataset has different types of tags apart from <s> and </s>
+
+print("\nTag types (passages containing each):", tags.most_common(10))
+print(
+    "Passages still containing < or > after tag removal:", 
+    sum(("<" in t or ">" in t) for t in no_tags) 
+    # counts the number of '<' or '>' characters in the passages after removing tags 
+    # [ helps determine whether the passages use these symbols for other purposes rather than tags]
+)
+
+other = {
+    "==": "==", 
+    "&amp;": "&amp;", 
+    "http": "http", 
+    "{{": "{{", 
+    "[[": "[[", 
+    "newline": "\n"
+} # other kinds of patterns apart from tags that should be looked at in the dataset 
+
+print(
+    "Other markup (passages containing):", 
+    {k: sum(v in t for t in uniq) for k, v in other.items()}
+)
+
+print(
+    "Stray token 's' BEFORE tag removal:", 
+    sum("s" in base(t) for t in uniq), 
+    "| AFTER:", 
+    sum("s" in base(t) for t in no_tags), 
+    "of", 
+    len(uniq)
+) 
+# investigates whether passages contain unwanted markup and whether not only markup creates misleading tokens but possesive pronouns or other instances 
+
+# -- Step 10: Understanding whether certain words are missing simply because;
+# the fact and passage use different forms of the same word 
+# Stemming necessity can be assessed 
+
+try:
+
+    ps_ = PorterStemmer()
+
+    for lab in ("S", "NS"):
+        missing = rescued = 0
+        pairs = []
+
+        for f, l, ps in exs:
+            if l != lab: 
+                continue
+
+            pw = set(
+                w for p in ps 
+                for w in base(re.sub(r"<[^>]*>", " ", p["text"]))
+            )
+
+            stem_to_word = {ps_.stem(w): w for w in pw}
+
+            for w in set(base(f)):
+                if w in pw: 
+                    continue
+
+                missing += 1
+
+                if ps_.stem(w) in stem_to_word:
+                    rescued += 1
+
+                    if len(pairs) < 8:
+                        pairs.append((w, stem_to_word[ps_.stem(w)]))
+
+    print(f"Supported and Non-supported facts: {lab:2s} missing words {missing} | rescued by Porter {rescued} (rate {rescued/max(1,missing):.2f}) | e.g. {pairs}") 
+except ImportError:
+    print("nltk not installed: skipped")
+
+# -- Step 11: Possessives ('s)
+
+poss = re.compile(r"['\u2019]s\b")
+
+pf = [(f, l) for f, l, _ in exs if poss.search(f)]
+
+print(
+    "\nFacts with 's:", 
+    len(pf), 
+    Counter(l for _, l in pf), 
+    [f for f, _ in pf[:3]]
+)
+
+print(
+    "Passages with 's:", 
+    sum(bool(poss.search(t)) for t in no_tags), 
+    "of", 
+    len(uniq)
+)
+
+# -- Step 12: Investigating the affect on using lowercasing on words
+
+fact_caps = Counter(
+    w for f, _, _ in exs
+    for w in re.findall(r"\b[A-Z]{2,}\b", f)
+) # searches words with two or more consecutive uppercase English letters
+
+low_all = Counter(
+    w for t in uniq
+    for w in re.findall(r"\b[a-z]+\b", t)
+) 
+print("\nALL-CAPS tokens in facts:", fact_caps.most_common(10))              
+print(
+    "...also ordinary lowercase words (token, count in facts, lowercase uses):", 
+    [
+        (w, c, low_all[w.lower()]) 
+        for w, c in fact_caps.items() 
+        if low_all[w.lower()] > 0
+    ]
+) # all-caps tokens are corss checked whether the lower case version appears as lowercase words
+# for example: "US" & "us"
+
+cap, low = Counter(), Counter() 
+
+for t in uniq:
+    prev_end = True
+
+    for w in t.split():
+        core = re.sub(r"^\W+|\W+$", "", w)
+
+        if core.isalpha():
+            if core.islower():
+                low[core] += 1
+            elif core[0].isupper() and not prev_end:
+                cap[core.lower()] += 1
+        prev_end = w[-1] in ".!?"
+
+clash = sorted(
+    ((w, cap[w], low[w]) for w in cap if low[w] > 0),
+    key=lambda x: -min(x[1], x[2])
+)
+
+print(
+    "used both capitalised mid-sentence and lowercase (word, cap, lower):", 
+    clash[:12]
+)
+# helps to identify words that are capitalised in the middle of a sentence and whether they appear as lowercase words
+# This helps to identify pronouns and other words that are capitalised in the middle of a sentence
+
+# -- Step 13: Hyphenated words
+
+hy = Counter()
+for f, _, ps in exs:
+    ptxt = " ".join(p["text"].lower() for p in ps)
+    ptoks = set(base(ptxt))
+
+    for tok in re.findall(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+", f):
+        t = tok.lower()
+        parts = t.split("-")
+
+        if t in ptxt: 
+            hy["intact in passage"] += 1 
+            # original hypenated spelling appears in the combined passage text
+
+        elif "".join(parts) in ptoks: 
+            hy["joined in passage"] += 1
+            # the original hypenated spelling words are joint and available in the passage as an individual word
+
+        elif all(x in ptoks for x in parts): 
+            hy["only the parts appear"] += 1
+            # checks whether the hypenated words are available separately in the passage
+
+        else: 
+            hy["not found"] += 1
+
+print("\nHyphenated fact words ->", dict(hy))
+# helps to identify words that are hyphenated in the fact and whether they appear as a single word in the passage
+
+# -- Step 14: Numbers Importance
+
+for lab in ("S", "NS"):
+    n = hit = 0
+
+    for f, l, ps in exs:
+        nums = re.findall(r"\d+", f)
+
+        if l != lab or not nums:
+            continue
+
+        pnums = set(
+            re.findall(r"\d+", " ".join(p["text"] for p in ps))
+        )
+
+        n += 1
+        hit += all(x in pnums for x in nums)
+
+    print(
+        f"{lab:2s} facts with numbers: {n} | "
+        f"all numbers found in passages: {hit}"
+        f"({hit/max(1,n):.2f})"
+    )
+
+print(
+    "passages with thousands separators like 1,942:", 
+    sum(bool(re.search(r"\d,\d{3}", t)) for t in uniq)
+    # this helps to avoid the split into two tokens due to separator/punctuation 
+)
+
+# -- Step 15: Passage lengths and duplicate facts
+
+lens = sorted(len(t) for t in uniq)
+
+print(
+    "\npassage length min/median/max:", 
+    lens[0], 
+    lens[len(lens) // 2], 
+    lens[-1], 
+    "| under 100 chars:", 
+    sum(l < 100 for l in lens)
+)
+
+by = {}
+
+for f, l, _ in exs: 
+    by.setdefault(f, set()).add(l)
+
+print(
+    "Duplicate fact strings:", 
+    len(exs) - len(by), 
+    "| with conflicting labels:", 
+    sum(len(v) > 1 for v in by.values())
+)
