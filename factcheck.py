@@ -88,11 +88,11 @@ class WordRecallThresholdFactChecker(FactChecker):
     # Number words that spaCy lists as stop words. They are removed from the stop list by default
     _stop_words, _porter, _nlp = None, None, None 
     
-    def __init__(self, threshold: float = 0.5):
+    def __init__(self, threshold: float = 0.633):
         """
         :param threshold: predict "S" when the maximum passage word-recall is
-            greater than or equal to this value. 0.5 is a provisional default
-            and has not been tuned.
+            greater than or equal to this value. 0.633 is the cutoff tuned for
+            stop-word removal plus Porter stemming on the development facts.
         """
         self.threshold = threshold
 
