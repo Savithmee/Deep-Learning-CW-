@@ -1,5 +1,6 @@
 # factcheck.py
 
+import re
 import torch
 from typing import List, Optional
 import numpy as np
@@ -82,6 +83,11 @@ class AlwaysEntailedFactChecker(FactChecker):
 
 
 class WordRecallThresholdFactChecker(FactChecker):
+    _NUMBER_WORDS = {"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", 
+    "twenty", "thirty", "forty", "fifty", "sixty", "hundred", "thousand", "million", "billion"} 
+    # Number words that spaCy lists as stop words. They are removed from the stop list by default
+    _stop_words, _porter, _nlp = None, None, None 
+    
     def __init__(self, threshold: float = 0.5):
         """
         :param threshold: predict "S" when the maximum passage word-recall is
@@ -90,19 +96,31 @@ class WordRecallThresholdFactChecker(FactChecker):
         """
         self.threshold = threshold
 
+    def preprocess(self, text):
+        """Split into letter/digit words, drop stop words, then Porter-stem."""
+        toks = re.findall(r"[A-Za-z0-9]+", text)
+        if WordRecallThresholdFactChecker._stop_words is None:
+            from spacy.lang.en.stop_words import STOP_WORDS
+            WordRecallThresholdFactChecker._stop_words = set(STOP_WORDS) - WordRecallThresholdFactChecker._NUMBER_WORDS
+        toks = [t for t in toks if t.lower() not in WordRecallThresholdFactChecker._stop_words]
+        if WordRecallThresholdFactChecker._porter is None:
+            from nltk.stem import PorterStemmer
+            WordRecallThresholdFactChecker._porter = PorterStemmer()
+        return [WordRecallThresholdFactChecker._porter.stem(t, to_lowercase=False) for t in toks]
+
     def overlap_score(self, fact: str, passages: List[dict]) -> Optional[float]:
         """
         Maximum word recall of the fact against any passage.
-        Tokens are the raw result of text.split() with no further normalization.
+        Tokens come from preprocess: letter/digit words, stop words removed, Porter stemmed.
         Returns None when the fact has no tokens or no passages are supplied.
         Gold labels are not an input to this method.
         """
-        fact_tokens = set(fact.split())
+        fact_tokens = set(self.preprocess(fact))
         if len(fact_tokens) == 0 or not passages:
             return None
         best_score = 0.0
         for passage in passages:
-            passage_tokens = set(passage["text"].split())
+            passage_tokens = set(self.preprocess(passage["text"]))
             score = len(fact_tokens & passage_tokens) / len(fact_tokens)
             if score > best_score:
                 best_score = score
@@ -115,6 +133,8 @@ class WordRecallThresholdFactChecker(FactChecker):
         if score >= self.threshold:
             return "S"
         return "NS"
+
+    
 
 
 class EntailmentFactChecker(FactChecker):
