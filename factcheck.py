@@ -1,7 +1,7 @@
 # factcheck.py
 
 import torch
-from typing import List
+from typing import List, Optional
 import numpy as np
 import spacy
 import gc
@@ -82,8 +82,39 @@ class AlwaysEntailedFactChecker(FactChecker):
 
 
 class WordRecallThresholdFactChecker(FactChecker):
+    def __init__(self, threshold: float = 0.5):
+        """
+        :param threshold: predict "S" when the maximum passage word-recall is
+            greater than or equal to this value. 0.5 is a provisional default
+            and has not been tuned.
+        """
+        self.threshold = threshold
+
+    def overlap_score(self, fact: str, passages: List[dict]) -> Optional[float]:
+        """
+        Maximum word recall of the fact against any passage.
+        Tokens are the raw result of text.split() with no further normalization.
+        Returns None when the fact has no tokens or no passages are supplied.
+        Gold labels are not an input to this method.
+        """
+        fact_tokens = set(fact.split())
+        if len(fact_tokens) == 0 or not passages:
+            return None
+        best_score = 0.0
+        for passage in passages:
+            passage_tokens = set(passage["text"].split())
+            score = len(fact_tokens & passage_tokens) / len(fact_tokens)
+            if score > best_score:
+                best_score = score
+        return best_score
+
     def predict(self, fact: str, passages: List[dict]) -> str:
-        raise Exception("Implement me")
+        score = self.overlap_score(fact, passages)
+        if score is None:
+            return "NS"
+        if score >= self.threshold:
+            return "S"
+        return "NS"
 
 
 class EntailmentFactChecker(FactChecker):
