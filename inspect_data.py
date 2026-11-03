@@ -275,8 +275,7 @@ try:
 
                     if len(pairs) < 8:
                         pairs.append((w, stem_to_word[ps_.stem(w)]))
-
-    print(f"Supported and Non-supported facts: {lab:2s} missing words {missing} | rescued by Porter {rescued} (rate {rescued/max(1,missing):.2f}) | e.g. {pairs}") 
+        print(f"Supported and Non-supported facts: {lab:2s} missing words {missing} | rescued by Porter {rescued} (rate {rescued/max(1,missing):.2f}) | e.g. {pairs}") 
 except ImportError:
     print("nltk not installed: skipped")
 
